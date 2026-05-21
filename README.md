@@ -79,6 +79,77 @@ python main.py
 
 ---
 
+## Troubleshooting
+
+### `No module named 'googleapiclient'`
+
+**Step 1** — Check karo install hua ya nahi:
+```bash
+pip list | grep google
+```
+
+**Step 2** — Reinstall:
+```bash
+pip install google-api-python-client google-auth google-auth-oauthlib google-auth-httplib2 --no-build-isolation
+```
+
+**Step 3** — Agar phir bhi error aaye (pip aur python alag env pe hain):
+```bash
+python -m pip install google-api-python-client google-auth google-auth-oauthlib google-auth-httplib2 --no-build-isolation
+```
+
+**Step 4 (proot-distro/Ubuntu)** — `python3` use karo:
+```bash
+pip3 install google-api-python-client google-auth google-auth-oauthlib google-auth-httplib2 --no-build-isolation
+python3 main.py
+```
+
+---
+
+### `cryptography` install hang ho gayi / bahut slow hai
+
+pip se install karo toh Rust compiler compile karta hai — ghanton lag jaate hain. Pre-built binary use karo:
+
+**Termux:**
+```bash
+pkg install python-cryptography
+pip install google-api-python-client google-auth google-auth-oauthlib --no-build-isolation
+```
+
+**proot-distro (Ubuntu):**
+```bash
+apt install python3-cryptography
+pip3 install google-api-python-client google-auth google-auth-oauthlib --no-build-isolation
+```
+
+---
+
+### Python / pip mismatch
+
+Environment check karo:
+```bash
+which python
+python --version
+pip --version
+```
+
+Dono ka path same hona chahiye. Agar alag hain:
+```bash
+pkg install python   # Termux ka python reinstall karo
+```
+
+---
+
+### `ffmpeg` not found
+
+```bash
+pkg install ffmpeg          # Termux
+# ya
+apt install ffmpeg          # proot-distro
+```
+
+---
+
 ## Requirements
 
 - Python 3.9+
