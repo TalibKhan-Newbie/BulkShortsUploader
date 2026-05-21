@@ -1,0 +1,34 @@
+# ─── Credentials & tokens (kabhi commit mat karo) ────────────
+token.json
+client_secret.json
+insta_token.json
+
+# ─── Runtime data ─────────────────────────────────────────────
+quota_tracker.json
+upload_history.json
+
+# ─── Video folders ────────────────────────────────────────────
+clips/
+downloads/
+input/
+uploaded/
+Videos/
+
+# ─── Python ───────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ─── Virtual environment ──────────────────────────────────────
+Lib/
+Include/
+Scripts/
+share/
+pyvenv.cfg
+
+# ─── Editor / tools ───────────────────────────────────────────
+.claude/
+.vscode/
+.idea/
+*.log
