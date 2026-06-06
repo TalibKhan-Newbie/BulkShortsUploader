@@ -340,40 +340,29 @@ def handle_saved_clips(yt, platforms):
 
 # ─── Facebook Reels ──────────────────────────────────────────
 
-def handle_facebook_reels(yt, platforms):
-    profile_url = input(
-        "\n  Facebook profile/page URL daalo:\n"
-        "  (e.g. https://www.facebook.com/username): "
-    ).strip()
-    if not profile_url:
-        print("  URL nahi diya.")
-        return
+import re as _re
+import requests as _requests
 
-    base = profile_url.rstrip("/")
-    reels_url = base if "/reels" in base else base + "/reels/"
-
-    fb_folder = os.path.join(DOWNLOADS_DIR, "fb_reels")
-    os.makedirs(fb_folder, exist_ok=True)
-
-    # get_tokens.txt mein raw Cookie header string honi chahiye
-    cookie_args = []
+def _fb_load_cookies():
+    """get_tokens.txt se cookie string aur yt-dlp args return karo."""
     tokens_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "get_tokens.txt")
-    if os.path.exists(tokens_file):
-        with open(tokens_file) as _f:
-            cookie_str = _f.read().strip()
-        if cookie_str:
-            cookie_args = ["--add-header", f"Cookie:{cookie_str}"]
-            print("  [Auth] get_tokens.txt mili — cookies use ho rahi hain.")
+    if not os.path.exists(tokens_file):
+        return "", []
+    with open(tokens_file) as f:
+        cookie_str = f.read().strip()
+    if not cookie_str:
+        return "", []
+    return cookie_str, ["--add-header", f"Cookie:{cookie_str}"]
 
-    print(f"\n  Reels list fetch ho rahi hai...")
 
-    list_cmd = [
+def _ytdlp_fetch_urls(url, cookie_args):
+    """yt-dlp se flat playlist try karo."""
+    cmd = [
         sys.executable, "-m", "yt_dlp",
-        "--flat-playlist", "-j", "--no-warnings",
-        *cookie_args, reels_url,
+        "--flat-playlist", "-j", "--no-warnings", "--ignore-errors",
+        *cookie_args, url,
     ]
-    r = subprocess.run(list_cmd, capture_output=True, text=True)
-
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
     urls = []
     for line in r.stdout.strip().split("\n"):
         line = line.strip()
@@ -381,15 +370,123 @@ def handle_facebook_reels(yt, platforms):
             continue
         try:
             data = json.loads(line)
-            url = data.get("webpage_url") or data.get("url")
-            if url:
-                urls.append(url)
+            u = data.get("webpage_url") or data.get("url")
+            if u:
+                urls.append(u)
         except json.JSONDecodeError:
             pass
+    return urls
+
+
+def _html_scrape_reel_ids(page_url, cookie_str):
+    """Cookies se page fetch karke reel video IDs nikalo."""
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) "
+            "Gecko/20100101 Firefox/126.0"
+        ),
+        "Cookie": cookie_str,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Upgrade-Insecure-Requests": "1",
+    }
+    try:
+        resp = _requests.get(page_url, headers=headers, timeout=30)
+        html = resp.text
+    except Exception as e:
+        log(f"  [Scrape] Page fetch failed: {e}")
+        return []
+
+    found = dict()  # id → order (preserve first-seen order)
+    patterns = [
+        r'"video_id"\s*:\s*"(\d{10,})"',
+        r'"videoID"\s*:\s*"(\d{10,})"',
+        r'\/reel\/(\d{10,})',
+        r'story_fbid=(\d{10,})',
+    ]
+    for pat in patterns:
+        for vid in _re.findall(pat, html):
+            if vid not in found:
+                found[vid] = len(found)
+
+    return list(found.keys())
+
+
+def _fetch_all_fb_reels(raw_url, cookie_str, cookie_args):
+    """
+    Multi-strategy: yt-dlp flat-playlist → HTML scrape.
+    Tries several URL variants. Returns list of reel URLs.
+    """
+    # Build URL candidates to try
+    base = raw_url.rstrip("/")
+    id_match = _re.search(r'[?&]id=(\d+)', raw_url)
+    numeric_id = id_match.group(1) if id_match else None
+
+    candidates = []
+
+    # 1. Original URL
+    candidates.append(base if "/reels" in base else base + "/reels/")
+
+    # 2. If numeric ID, try sk=videos too
+    if numeric_id:
+        candidates.append(
+            f"https://www.facebook.com/profile.php?id={numeric_id}&sk=videos"
+        )
+
+    # 3. Plain profile URL
+    plain = _re.sub(r'[?&]sk=\w+', '', base).rstrip("/")
+    if plain not in candidates:
+        candidates.append(plain)
+
+    print("\n  Strategy 1: yt-dlp playlist try kar raha hai...")
+    for candidate in candidates:
+        urls = _ytdlp_fetch_urls(candidate, cookie_args)
+        if urls:
+            print(f"  yt-dlp se {len(urls)} reels mili ({candidate})")
+            return urls
+
+    # 4. HTML scraping fallback
+    if not cookie_str:
+        return []
+
+    print("  Strategy 2: HTML scraping with cookies...")
+    scrape_url = (
+        f"https://www.facebook.com/profile.php?id={numeric_id}&sk=reels_tab"
+        if numeric_id else base + "/reels/"
+    )
+    ids = _html_scrape_reel_ids(scrape_url, cookie_str)
+    if ids:
+        print(f"  HTML se {len(ids)} reel IDs mile.")
+        return [f"https://www.facebook.com/reel/{vid}/" for vid in ids]
+
+    return []
+
+
+def handle_facebook_reels(yt, platforms):
+    profile_url = input(
+        "\n  Facebook profile/page URL daalo:\n"
+        "  (e.g. https://www.facebook.com/username\n"
+        "   ya  https://www.facebook.com/profile.php?id=xxx): "
+    ).strip()
+    if not profile_url:
+        print("  URL nahi diya.")
+        return
+
+    fb_folder = os.path.join(DOWNLOADS_DIR, "fb_reels")
+    os.makedirs(fb_folder, exist_ok=True)
+
+    cookie_str, cookie_args = _fb_load_cookies()
+    if cookie_str:
+        print("  [Auth] get_tokens.txt mili — cookies use ho rahi hain.")
+    else:
+        print("  [Auth] get_tokens.txt nahi mili — public profile try karega.")
+
+    urls = _fetch_all_fb_reels(profile_url, cookie_str, cookie_args)
 
     if not urls:
-        print("  Reels nahi mili.")
-        print("  Check karo: profile public hai? URL sahi hai?")
+        print("\n  Koi reel nahi mili.")
+        print("  Agar private profile hai toh pehle manually follow karo,")
+        print("  phir fresh cookies get_tokens.txt mein daalo.")
         return
 
     print(f"  {len(urls)} reels mili!")
