@@ -342,7 +342,7 @@ def handle_saved_clips(yt, platforms):
 
 def handle_facebook_reels(yt, platforms):
     profile_url = input(
-        "\n  Facebook profile URL daalo:\n"
+        "\n  Facebook profile/page URL daalo:\n"
         "  (e.g. https://www.facebook.com/username): "
     ).strip()
     if not profile_url:
@@ -355,15 +355,12 @@ def handle_facebook_reels(yt, platforms):
     fb_folder = os.path.join(DOWNLOADS_DIR, "fb_reels")
     os.makedirs(fb_folder, exist_ok=True)
 
-    cookies_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fb_cookies.txt")
-    auth_args = ["--cookies", cookies_file] if os.path.exists(cookies_file) else []
-
-    print(f"\n  Reels list fetch ho rahi hai...")
+    print(f"\n  Reels list fetch ho rahi hai (no login required)...")
 
     list_cmd = [
         sys.executable, "-m", "yt_dlp",
         "--flat-playlist", "-j", "--no-warnings",
-        *auth_args, reels_url,
+        reels_url,
     ]
     r = subprocess.run(list_cmd, capture_output=True, text=True)
 
@@ -381,12 +378,8 @@ def handle_facebook_reels(yt, platforms):
             pass
 
     if not urls:
-        print("  Reels nahi mili ya profile private hai.")
-        print()
-        print("  Private profile ke liye fb_cookies.txt banao:")
-        print("  1. Android Chrome mein facebook.com kholo")
-        print("  2. PC pe 'Get cookies.txt LOCALLY' extension use karo")
-        print("  3. fb_cookies.txt → project folder mein rakho")
+        print("  Reels nahi mili.")
+        print("  Check karo: profile public hai? URL sahi hai?")
         return
 
     print(f"  {len(urls)} reels mili!")
@@ -401,23 +394,35 @@ def handle_facebook_reels(yt, platforms):
 
     selected_urls = urls if n == 0 else urls[:n]
     total = len(selected_urls)
-    print(f"\n  {total} reels download ho rahi hain → {fb_folder}\n")
 
-    for i, reel_url in enumerate(selected_urls, 1):
+    video_desc = input("  Video topic/description (metadata ke liye, blank=skip): ").strip()
+
+    print(f"\n  {total} reels download ho rahi hain (workers={MAX_WORKERS}) → {fb_folder}\n")
+
+    def _dl_one(args):
+        i, reel_url = args
         out_tmpl = os.path.join(fb_folder, f"fb_reel_{i:03d}.%(ext)s")
-        dl_cmd = [
+        cmd = [
             sys.executable, "-m", "yt_dlp",
             "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
             "--merge-output-format", "mp4",
             "-o", out_tmpl, "--no-playlist", "--no-warnings",
-            *auth_args, reel_url,
+            reel_url,
         ]
         log(f"  [{i}/{total}] Downloading...")
-        dr = subprocess.run(dl_cmd, capture_output=True, text=True)
-        if dr.returncode != 0:
-            log(f"  [{i}/{total}] FAIL: {reel_url}")
-        else:
-            log(f"  [{i}/{total}] Done!")
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            log(f"  [{i}/{total}] FAIL")
+            return False
+        log(f"  [{i}/{total}] Done!")
+        return True
+
+    done_count = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        futs = {ex.submit(_dl_one, t): t for t in enumerate(selected_urls, 1)}
+        for f in concurrent.futures.as_completed(futs):
+            if f.result():
+                done_count += 1
 
     downloaded = sorted(
         [os.path.join(fb_folder, f) for f in os.listdir(fb_folder)
@@ -425,11 +430,12 @@ def handle_facebook_reels(yt, platforms):
         key=os.path.getmtime,
     )
 
+    print(f"\n  {done_count}/{total} reels download hui.\n")
+
     if not downloaded:
         print("  Koi file download nahi hui.")
         return
 
-    print(f"\n  {len(downloaded)} clips ready.\n")
     print_quota_status()
 
     quota_min = min(platform_remaining(p) for p in platforms)
@@ -446,8 +452,6 @@ def handle_facebook_reels(yt, platforms):
                 break
         except (ValueError, EOFError):
             pass
-
-    video_desc = input("  Video topic/description (metadata ke liye, blank=skip): ").strip()
 
     plat_str = " + ".join(p.upper() for p in platforms)
     print(f"\n  Upload → {plat_str}")
