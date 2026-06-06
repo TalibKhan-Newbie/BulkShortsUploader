@@ -109,9 +109,9 @@ def already_uploaded(clip_name, platform="youtube"):
 
 # ─── OpenAI Metadata ─────────────────────────────────────────
 
-def generate_metadata(clip_name):
+def generate_metadata(clip_name, video_desc=""):
     if not OPENAI_API_KEY:
-        title = clip_name.replace("_", " ").replace(".mp4", "")[:70]
+        title = (video_desc or clip_name.replace("_", " ").replace(".mp4", ""))[:70]
         return {
             "title":       title,
             "description": f"{title}\n\n#Shorts",
@@ -133,8 +133,10 @@ def generate_metadata(clip_name):
     ]
 
     client = OpenAI(api_key=OPENAI_API_KEY)
+    desc_line = f"Video description: {video_desc}" if video_desc else ""
     prompt = f"""Viral short-form video strategist.
 Channel: {CHANNEL_TOPIC}
+{desc_line}
 Clip: {clip_name}
 Creative angle: {random.choice(angles)}
 Seed: {random.randint(1000, 9999)}
@@ -396,11 +398,7 @@ def _upload_facebook(clip_path, meta, token, page_id):
 
 # ─── Multi-Platform Upload ────────────────────────────────────
 
-def upload_clip(clip_path, youtube=None, platforms=None):
-    """
-    platforms: list jisme "youtube", "instagram", "facebook" ho sakte hain.
-    None doge toh config ke ENABLE_* flags se decide hoga.
-    """
+def upload_clip(clip_path, youtube=None, platforms=None, video_desc=""):
     clip_name = os.path.basename(clip_path)
 
     if platforms is None:
@@ -414,7 +412,7 @@ def upload_clip(clip_path, youtube=None, platforms=None):
 
     print(f"\n  [Meta] Metadata generate ho raha hai...")
     try:
-        meta = generate_metadata(clip_name)
+        meta = generate_metadata(clip_name, video_desc)
         print(f"  [Title] {meta['title']}")
     except Exception as e:
         print(f"  [Meta] Failed ({e}) — default title use ho raha hai")

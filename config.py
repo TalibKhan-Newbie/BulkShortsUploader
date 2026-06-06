@@ -3,7 +3,7 @@ CLIPS_DIR     = "clips"
 DOWNLOADS_DIR = "downloads"
 
 # ─── Clip Settings ───────────────────────────────────────────
-CHUNK_DURATION     = 30    # max clips calculate karne ke liye
+CHUNK_DURATION     = 180    # max clips calculate karne ke liye
 CHUNK_DURATION_MIN = 15    # minimum clip duration (seconds)
 CHUNK_DURATION_MAX = 30    # maximum clip duration (seconds)
 
@@ -41,9 +41,9 @@ INSTA_USER_ID         = ""     # blank rakhoge toh auto-fetch hoga
 INSTAGRAM_DAILY_LIMIT = 50
 
 # ─── Facebook ────────────────────────────────────────────────
-ENABLE_FACEBOOK      = False   # True karo jab FB Page token ho
+ENABLE_FACEBOOK      = True   # True karo jab FB Page token ho
 FB_ACCESS_TOKEN      = ""      # Facebook Page access token
-FB_PAGE_ID           = ""      # Facebook Page ID
+FB_PAGE_ID           = "122115537585257846"      # Facebook Page ID
 FACEBOOK_DAILY_LIMIT = 50
 
 # ─── General ─────────────────────────────────────────────────

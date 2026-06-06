@@ -11,6 +11,7 @@ import threading
 import concurrent.futures
 import random
 import time
+import json
 
 from config import (
     CLIPS_DIR, DOWNLOADS_DIR,
@@ -109,13 +110,29 @@ def get_duration(path):
 def process_chunk(task):
     input_path, start, clip_dur, num, total, out_path = task
 
-    vf  = f"crop=ih*9/16:ih,scale={TARGET_W}:{TARGET_H},setpts=PTS/{SPEED}"
-    fc  = f"[0:v]{vf}[v]"
-    maps = ["-map", "[v]"]
-
+    # Blurred background: landscape source is letterboxed into 9:16 frame.
+    # bg = source scaled+cropped to fill frame then blurred
+    # fg = source scaled to fit fully within frame (no crop, full content visible)
+    # overlay fg centered on bg
     if not MUTE_AUDIO:
-        fc   += f";[0:a]atempo={SPEED}[a]"
-        maps += ["-map", "[a]"]
+        fc = (
+            f"[0:v]split=2[v1][v2];"
+            f"[v1]scale={TARGET_W}:{TARGET_H}:force_original_aspect_ratio=increase,"
+            f"crop={TARGET_W}:{TARGET_H},boxblur=20:5,setpts=PTS/{SPEED}[bg];"
+            f"[v2]scale={TARGET_W}:-2,setpts=PTS/{SPEED}[fg];"
+            f"[bg][fg]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2[v];"
+            f"[0:a]atempo={SPEED}[a]"
+        )
+        maps = ["-map", "[v]", "-map", "[a]"]
+    else:
+        fc = (
+            f"[0:v]split=2[v1][v2];"
+            f"[v1]scale={TARGET_W}:{TARGET_H}:force_original_aspect_ratio=increase,"
+            f"crop={TARGET_W}:{TARGET_H},boxblur=20:5,setpts=PTS/{SPEED}[bg];"
+            f"[v2]scale={TARGET_W}:-2,setpts=PTS/{SPEED}[fg];"
+            f"[bg][fg]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2[v]"
+        )
+        maps = ["-map", "[v]"]
 
     cmd = [
         "ffmpeg", "-y",
@@ -125,7 +142,7 @@ def process_chunk(task):
         "-filter_complex", fc,
         *maps,
         "-c:v", "libx264", "-preset", "ultrafast", "-crf", str(CRF), "-threads", "2",
-        "-c:a", "aac" if not MUTE_AUDIO else "copy",
+        *(("-c:a", "aac") if not MUTE_AUDIO else ()),
         "-r", str(FPS),
         out_path,
     ]
@@ -244,6 +261,8 @@ def handle_url(yt, platforms):
         print("  URL nahi diya.")
         return
 
+    video_desc = input("  Video topic/description (metadata ke liye): ").strip()
+
     path = download_youtube(url)
     if not path:
         return
@@ -260,7 +279,7 @@ def handle_url(yt, platforms):
     plat_str = " + ".join(p.upper() for p in platforms)
     print(f"  {len(clips)} clips upload ho rahi hain → {plat_str}")
     for i, clip in enumerate(clips):
-        upload_clip(clip, youtube=yt, platforms=platforms)
+        upload_clip(clip, youtube=yt, platforms=platforms, video_desc=video_desc)
         if i < len(clips) - 1:
             print(f"  [{UPLOAD_DELAY}s wait...]")
             time.sleep(UPLOAD_DELAY)
@@ -307,12 +326,134 @@ def handle_saved_clips(yt, platforms):
             pass
         print(f"  1-{max_n} ke beech daalo")
 
+    video_desc = input("\n  Video topic/description (metadata ke liye, blank=skip): ").strip()
+
     plat_str = " + ".join(p.upper() for p in platforms)
     print(f"\n  Upload → {plat_str}")
     selected = clips[:n]
     for i, clip in enumerate(selected):
-        upload_clip(clip, youtube=yt, platforms=platforms)
+        upload_clip(clip, youtube=yt, platforms=platforms, video_desc=video_desc)
         if i < len(selected) - 1:
+            print(f"  [{UPLOAD_DELAY}s wait...]")
+            time.sleep(UPLOAD_DELAY)
+
+
+# ─── Facebook Reels ──────────────────────────────────────────
+
+def handle_facebook_reels(yt, platforms):
+    profile_url = input(
+        "\n  Facebook profile URL daalo:\n"
+        "  (e.g. https://www.facebook.com/username): "
+    ).strip()
+    if not profile_url:
+        print("  URL nahi diya.")
+        return
+
+    base = profile_url.rstrip("/")
+    reels_url = base if "/reels" in base else base + "/reels/"
+
+    fb_folder = os.path.join(DOWNLOADS_DIR, "fb_reels")
+    os.makedirs(fb_folder, exist_ok=True)
+
+    cookies_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fb_cookies.txt")
+    auth_args = ["--cookies", cookies_file] if os.path.exists(cookies_file) else []
+
+    print(f"\n  Reels list fetch ho rahi hai...")
+
+    list_cmd = [
+        sys.executable, "-m", "yt_dlp",
+        "--flat-playlist", "-j", "--no-warnings",
+        *auth_args, reels_url,
+    ]
+    r = subprocess.run(list_cmd, capture_output=True, text=True)
+
+    urls = []
+    for line in r.stdout.strip().split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            data = json.loads(line)
+            url = data.get("webpage_url") or data.get("url")
+            if url:
+                urls.append(url)
+        except json.JSONDecodeError:
+            pass
+
+    if not urls:
+        print("  Reels nahi mili ya profile private hai.")
+        print()
+        print("  Private profile ke liye fb_cookies.txt banao:")
+        print("  1. Android Chrome mein facebook.com kholo")
+        print("  2. PC pe 'Get cookies.txt LOCALLY' extension use karo")
+        print("  3. fb_cookies.txt → project folder mein rakho")
+        return
+
+    print(f"  {len(urls)} reels mili!")
+
+    while True:
+        try:
+            n = int(input(f"  Kitni download karni hain? (1-{len(urls)}, 0=sab): ").strip())
+            if 0 <= n <= len(urls):
+                break
+        except (ValueError, EOFError):
+            pass
+
+    selected_urls = urls if n == 0 else urls[:n]
+    total = len(selected_urls)
+    print(f"\n  {total} reels download ho rahi hain → {fb_folder}\n")
+
+    for i, reel_url in enumerate(selected_urls, 1):
+        out_tmpl = os.path.join(fb_folder, f"fb_reel_{i:03d}.%(ext)s")
+        dl_cmd = [
+            sys.executable, "-m", "yt_dlp",
+            "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "--merge-output-format", "mp4",
+            "-o", out_tmpl, "--no-playlist", "--no-warnings",
+            *auth_args, reel_url,
+        ]
+        log(f"  [{i}/{total}] Downloading...")
+        dr = subprocess.run(dl_cmd, capture_output=True, text=True)
+        if dr.returncode != 0:
+            log(f"  [{i}/{total}] FAIL: {reel_url}")
+        else:
+            log(f"  [{i}/{total}] Done!")
+
+    downloaded = sorted(
+        [os.path.join(fb_folder, f) for f in os.listdir(fb_folder)
+         if f.lower().endswith(".mp4")],
+        key=os.path.getmtime,
+    )
+
+    if not downloaded:
+        print("  Koi file download nahi hui.")
+        return
+
+    print(f"\n  {len(downloaded)} clips ready.\n")
+    print_quota_status()
+
+    quota_min = min(platform_remaining(p) for p in platforms)
+    max_n = min(len(downloaded), quota_min)
+
+    if max_n <= 0:
+        print("  Quota khatam hai!")
+        return
+
+    while True:
+        try:
+            up_n = int(input(f"  Kitni upload karni hain? (1-{max_n}): ").strip())
+            if 1 <= up_n <= max_n:
+                break
+        except (ValueError, EOFError):
+            pass
+
+    video_desc = input("  Video topic/description (metadata ke liye, blank=skip): ").strip()
+
+    plat_str = " + ".join(p.upper() for p in platforms)
+    print(f"\n  Upload → {plat_str}")
+    for i, clip in enumerate(downloaded[:up_n]):
+        upload_clip(clip, youtube=yt, platforms=platforms, video_desc=video_desc)
+        if i < up_n - 1:
             print(f"  [{UPLOAD_DELAY}s wait...]")
             time.sleep(UPLOAD_DELAY)
 
@@ -332,10 +473,11 @@ def main():
         choice = ask("Menu:", [
             "URL se download → shorts → upload",
             "Saved clips upload karo",
+            "Facebook Reels download → upload",
             "Exit",
         ])
 
-        if choice == 3:
+        if choice == 4:
             print("\n  Bye!\n")
             break
 
@@ -358,6 +500,8 @@ def main():
             handle_url(yt, platforms)
         elif choice == 2:
             handle_saved_clips(yt, platforms)
+        elif choice == 3:
+            handle_facebook_reels(yt, platforms)
 
         print("\n  " + "─" * 38)
         input("  Enter dabao menu ke liye...")
