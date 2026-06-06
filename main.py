@@ -355,12 +355,22 @@ def handle_facebook_reels(yt, platforms):
     fb_folder = os.path.join(DOWNLOADS_DIR, "fb_reels")
     os.makedirs(fb_folder, exist_ok=True)
 
-    print(f"\n  Reels list fetch ho rahi hai (no login required)...")
+    # get_tokens.txt mein raw Cookie header string honi chahiye
+    cookie_args = []
+    tokens_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "get_tokens.txt")
+    if os.path.exists(tokens_file):
+        with open(tokens_file) as _f:
+            cookie_str = _f.read().strip()
+        if cookie_str:
+            cookie_args = ["--add-header", f"Cookie:{cookie_str}"]
+            print("  [Auth] get_tokens.txt mili — cookies use ho rahi hain.")
+
+    print(f"\n  Reels list fetch ho rahi hai...")
 
     list_cmd = [
         sys.executable, "-m", "yt_dlp",
         "--flat-playlist", "-j", "--no-warnings",
-        reels_url,
+        *cookie_args, reels_url,
     ]
     r = subprocess.run(list_cmd, capture_output=True, text=True)
 
@@ -407,7 +417,7 @@ def handle_facebook_reels(yt, platforms):
             "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
             "--merge-output-format", "mp4",
             "-o", out_tmpl, "--no-playlist", "--no-warnings",
-            reel_url,
+            *cookie_args, reel_url,
         ]
         log(f"  [{i}/{total}] Downloading...")
         result = subprocess.run(cmd, capture_output=True, text=True)

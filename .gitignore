@@ -2,6 +2,7 @@
 token.json
 client_secret.json
 insta_token.json
+get_tokens.txt
 
 # ─── Runtime data ─────────────────────────────────────────────
 quota_tracker.json
