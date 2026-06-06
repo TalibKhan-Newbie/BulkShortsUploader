@@ -510,26 +510,78 @@ def _ytdlp_fetch_urls(url, cookie_args):
     return urls
 
 
+def _extract_video_ids(html):
+    """HTML se Facebook video/reel IDs extract karo (unique, ordered)."""
+    seen = {}
+    for pat in [
+        r'/reel/(\d{8,})',           # reels tab ka main pattern
+        r'"video_id"\s*:\s*"(\d{8,})"',
+        r'"videoID"\s*:\s*"(\d{8,})"',
+        r'story_fbid=(\d{8,})',
+        r'/videos/(\d{10,})',
+        r'href="/video/(\d{8,})',
+    ]:
+        for vid in _re.findall(pat, html):
+            if vid not in seen:
+                seen[vid] = len(seen)
+    return list(seen.keys())
+
+
+def _fb_headers(cookie_str=""):
+    h = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) "
+            "Gecko/20100101 Firefox/126.0"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+    }
+    if cookie_str:
+        h["Cookie"] = cookie_str
+    return h
+
+
 def _fetch_all_fb_reels(raw_url, cookie_str, cookie_args):
-    # Strategy 1: mbasic.facebook.com plain HTML (most reliable)
-    print("  Strategy 1: mbasic.facebook.com se video list fetch kar raha hai...")
+    id_match = _re.search(r'[?&]id=(\d+)', raw_url)
+    numeric_id = id_match.group(1) if id_match else None
+
+    # ── Strategy 1: facebook.com reels tab direct scrape ──────
+    print("  Strategy 1: facebook.com/reels_tab HTML scraping...")
+    if numeric_id:
+        reels_url = f"https://www.facebook.com/profile.php?id={numeric_id}&sk=reels_tab"
+    else:
+        base = _re.sub(r'[?#].*', '', raw_url).rstrip('/')
+        reels_url = base + "?sk=reels_tab"
+
+    html = _fb_fetch(reels_url, _fb_headers(cookie_str))
+    if html:
+        log(f"  [debug] Page size: {len(html)} bytes")
+        ids = _extract_video_ids(html)
+        log(f"  [debug] IDs found: {len(ids)}")
+        if ids:
+            print(f"  {len(ids)} reels mili!")
+            return [f"https://www.facebook.com/reel/{vid}/" for vid in ids]
+
+    # ── Strategy 2: mbasic videos tab ─────────────────────────
+    print("  Strategy 2: mbasic.facebook.com videos tab...")
     mbasic_url = _fb_to_mbasic_url(raw_url)
     if mbasic_url:
         ids = _mbasic_scrape_videos(mbasic_url, cookie_str)
         if ids:
             return [f"https://www.facebook.com/video/{vid}/" for vid in ids]
 
-    # Strategy 2: yt-dlp flat-playlist (fallback)
-    print("  Strategy 2: yt-dlp playlist try kar raha hai...")
-    base = raw_url.rstrip("/")
-    id_match = _re.search(r'[?&]id=(\d+)', raw_url)
-    numeric_id = id_match.group(1) if id_match else None
-
-    candidates = [base if "/reels" in base else base + "/reels/"]
+    # ── Strategy 3: yt-dlp flat-playlist ──────────────────────
+    print("  Strategy 3: yt-dlp playlist try kar raha hai...")
+    candidates = []
     if numeric_id:
-        candidates.append(
-            f"https://www.facebook.com/profile.php?id={numeric_id}&sk=videos"
-        )
+        candidates += [
+            f"https://www.facebook.com/profile.php?id={numeric_id}&sk=videos",
+            f"https://www.facebook.com/profile.php?id={numeric_id}",
+        ]
+    candidates.append(raw_url)
 
     for candidate in candidates:
         urls = _ytdlp_fetch_urls(candidate, cookie_args)
