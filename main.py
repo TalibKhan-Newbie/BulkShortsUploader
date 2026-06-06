@@ -343,8 +343,8 @@ def handle_saved_clips(yt, platforms):
 import re as _re
 import requests as _requests
 
+
 def _fb_load_cookies():
-    """get_tokens.txt se cookie string aur yt-dlp args return karo."""
     tokens_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "get_tokens.txt")
     if not os.path.exists(tokens_file):
         return "", []
@@ -355,8 +355,85 @@ def _fb_load_cookies():
     return cookie_str, ["--add-header", f"Cookie:{cookie_str}"]
 
 
+def _fb_to_mbasic_url(raw_url):
+    """
+    Any Facebook URL → mbasic.facebook.com videos tab URL.
+    mbasic = plain HTML version, no JS needed, easy to parse.
+    """
+    id_match = _re.search(r'[?&]id=(\d+)', raw_url)
+    if id_match:
+        return f"https://mbasic.facebook.com/profile.php?id={id_match.group(1)}&v=videos"
+
+    path_match = _re.search(r'facebook\.com/(.+)', raw_url)
+    if path_match:
+        path = path_match.group(1).split("?")[0].rstrip("/")
+        return f"https://mbasic.facebook.com/{path}/videos/"
+
+    return None
+
+
+def _mbasic_scrape_videos(start_url, cookie_str, max_pages=10):
+    """
+    mbasic.facebook.com se paginated plain-HTML scraping.
+    Works for public profiles without cookies too.
+    Follows 'See More' pagination links.
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Linux; Android 12; Mobile) AppleWebKit/537.36 Chrome/112.0",
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    if cookie_str:
+        headers["Cookie"] = cookie_str
+
+    all_ids = []
+    url = start_url
+
+    for page_num in range(1, max_pages + 1):
+        try:
+            resp = _requests.get(url, headers=headers, timeout=30, allow_redirects=True)
+            # Redirect to login = private profile without proper cookies
+            if "login" in resp.url or "checkpoint" in resp.url:
+                log("  [mbasic] Login page redirect — cookies sahi nahi hain ya profile private hai.")
+                break
+            html = resp.text
+        except Exception as e:
+            log(f"  [mbasic] Fetch error: {e}")
+            break
+
+        page_ids = []
+        for pat in [
+            r'href="/video/(\d+)(?:/|\?)',
+            r'video_id=(\d+)',
+            r'/videos/(\d{10,})(?:/|\?)',
+            r'"videoID":"(\d{10,})"',
+        ]:
+            for vid in _re.findall(pat, html):
+                if vid not in all_ids and vid not in page_ids:
+                    page_ids.append(vid)
+
+        all_ids.extend(page_ids)
+        log(f"  [mbasic] Page {page_num}: {len(page_ids)} videos (total: {len(all_ids)})")
+
+        if not page_ids:
+            break
+
+        # "See More" ya pagination link dhundo
+        next_match = _re.search(
+            r'href="(/[^"]*(?:videos|end_cursor|start_index|timeline_cursor)[^"]*)"',
+            html, _re.IGNORECASE,
+        )
+        if not next_match:
+            break
+        next_path = next_match.group(1)
+        if next_path in url:  # same page loop guard
+            break
+        url = "https://mbasic.facebook.com" + next_path
+
+    return all_ids
+
+
 def _ytdlp_fetch_urls(url, cookie_args):
-    """yt-dlp se flat playlist try karo."""
     cmd = [
         sys.executable, "-m", "yt_dlp",
         "--flat-playlist", "-j", "--no-warnings", "--ignore-errors",
@@ -378,86 +455,31 @@ def _ytdlp_fetch_urls(url, cookie_args):
     return urls
 
 
-def _html_scrape_reel_ids(page_url, cookie_str):
-    """Cookies se page fetch karke reel video IDs nikalo."""
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) "
-            "Gecko/20100101 Firefox/126.0"
-        ),
-        "Cookie": cookie_str,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-        "Upgrade-Insecure-Requests": "1",
-    }
-    try:
-        resp = _requests.get(page_url, headers=headers, timeout=30)
-        html = resp.text
-    except Exception as e:
-        log(f"  [Scrape] Page fetch failed: {e}")
-        return []
-
-    found = dict()  # id → order (preserve first-seen order)
-    patterns = [
-        r'"video_id"\s*:\s*"(\d{10,})"',
-        r'"videoID"\s*:\s*"(\d{10,})"',
-        r'\/reel\/(\d{10,})',
-        r'story_fbid=(\d{10,})',
-    ]
-    for pat in patterns:
-        for vid in _re.findall(pat, html):
-            if vid not in found:
-                found[vid] = len(found)
-
-    return list(found.keys())
-
-
 def _fetch_all_fb_reels(raw_url, cookie_str, cookie_args):
-    """
-    Multi-strategy: yt-dlp flat-playlist → HTML scrape.
-    Tries several URL variants. Returns list of reel URLs.
-    """
-    # Build URL candidates to try
+    # Strategy 1: mbasic.facebook.com plain HTML (most reliable)
+    print("  Strategy 1: mbasic.facebook.com se video list fetch kar raha hai...")
+    mbasic_url = _fb_to_mbasic_url(raw_url)
+    if mbasic_url:
+        ids = _mbasic_scrape_videos(mbasic_url, cookie_str)
+        if ids:
+            return [f"https://www.facebook.com/video/{vid}/" for vid in ids]
+
+    # Strategy 2: yt-dlp flat-playlist (fallback)
+    print("  Strategy 2: yt-dlp playlist try kar raha hai...")
     base = raw_url.rstrip("/")
     id_match = _re.search(r'[?&]id=(\d+)', raw_url)
     numeric_id = id_match.group(1) if id_match else None
 
-    candidates = []
-
-    # 1. Original URL
-    candidates.append(base if "/reels" in base else base + "/reels/")
-
-    # 2. If numeric ID, try sk=videos too
+    candidates = [base if "/reels" in base else base + "/reels/"]
     if numeric_id:
         candidates.append(
             f"https://www.facebook.com/profile.php?id={numeric_id}&sk=videos"
         )
 
-    # 3. Plain profile URL
-    plain = _re.sub(r'[?&]sk=\w+', '', base).rstrip("/")
-    if plain not in candidates:
-        candidates.append(plain)
-
-    print("\n  Strategy 1: yt-dlp playlist try kar raha hai...")
     for candidate in candidates:
         urls = _ytdlp_fetch_urls(candidate, cookie_args)
         if urls:
-            print(f"  yt-dlp se {len(urls)} reels mili ({candidate})")
             return urls
-
-    # 4. HTML scraping fallback
-    if not cookie_str:
-        return []
-
-    print("  Strategy 2: HTML scraping with cookies...")
-    scrape_url = (
-        f"https://www.facebook.com/profile.php?id={numeric_id}&sk=reels_tab"
-        if numeric_id else base + "/reels/"
-    )
-    ids = _html_scrape_reel_ids(scrape_url, cookie_str)
-    if ids:
-        print(f"  HTML se {len(ids)} reel IDs mile.")
-        return [f"https://www.facebook.com/reel/{vid}/" for vid in ids]
 
     return []
 
