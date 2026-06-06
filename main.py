@@ -379,7 +379,10 @@ def _mbasic_scrape_videos(start_url, cookie_str, max_pages=10):
     Follows 'See More' pagination links.
     """
     headers = {
-        "User-Agent": "Mozilla/5.0 (Linux; Android 12; Mobile) AppleWebKit/537.36 Chrome/112.0",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) "
+            "Gecko/20100101 Firefox/126.0"
+        ),
         "Accept": "text/html,application/xhtml+xml",
         "Accept-Language": "en-US,en;q=0.9",
     }
