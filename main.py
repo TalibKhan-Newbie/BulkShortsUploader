@@ -372,11 +372,64 @@ def _fb_to_mbasic_url(raw_url):
     return None
 
 
+def _fb_fetch(url, headers):
+    """
+    Fetch URL safely.
+    Facebook kabhi kabhi intent:// redirect karta hai (Android app deep link).
+    Requests ye handle nahi kar sakta — manually redirect follow karo aur
+    intent:// mile toh browser_fallback_url use karo.
+    """
+    import urllib.parse
+
+    current = url
+    for _ in range(10):
+        try:
+            resp = _requests.get(current, headers=headers, timeout=30, allow_redirects=False)
+        except Exception as e:
+            err = str(e)
+            # requests ne intent:// follow karne ki koshish ki aur InvalidSchema diya
+            fb = _re.search(r'browser_fallback_url=([^;&\s"\']+)', err)
+            if fb:
+                current = urllib.parse.unquote(fb.group(1))
+                continue
+            log(f"  [fetch] Error: {e}")
+            return None
+
+        if resp.status_code == 200:
+            return resp.text
+
+        if resp.status_code not in (301, 302, 303, 307, 308):
+            log(f"  [fetch] HTTP {resp.status_code}")
+            return None
+
+        loc = resp.headers.get("Location", "")
+        if not loc:
+            return None
+
+        if loc.startswith("intent://"):
+            fb = _re.search(r'browser_fallback_url=([^;&\s"\']+)', loc)
+            if not fb:
+                log("  [fetch] intent:// redirect, no fallback URL.")
+                return None
+            import urllib.parse as _up
+            loc = _up.unquote(fb.group(1))
+
+        elif not loc.startswith("http"):
+            base = _re.match(r"https?://[^/]+", current)
+            loc = (base.group(0) if base else "https://mbasic.facebook.com") + loc
+
+        if loc == current:
+            return None
+        current = loc
+
+    return None
+
+
 def _mbasic_scrape_videos(start_url, cookie_str, max_pages=10):
     """
-    mbasic.facebook.com se paginated plain-HTML scraping.
-    Works for public profiles without cookies too.
-    Follows 'See More' pagination links.
+    mbasic.facebook.com plain-HTML se paginated video ID scraping.
+    Public profiles: cookies ke bina bhi kaam karta hai.
+    Private profiles: cookies se kaam karta hai (agar follow kiya ho).
     """
     headers = {
         "User-Agent": (
@@ -393,15 +446,12 @@ def _mbasic_scrape_videos(start_url, cookie_str, max_pages=10):
     url = start_url
 
     for page_num in range(1, max_pages + 1):
-        try:
-            resp = _requests.get(url, headers=headers, timeout=30, allow_redirects=True)
-            # Redirect to login = private profile without proper cookies
-            if "login" in resp.url or "checkpoint" in resp.url:
-                log("  [mbasic] Login page redirect — cookies sahi nahi hain ya profile private hai.")
-                break
-            html = resp.text
-        except Exception as e:
-            log(f"  [mbasic] Fetch error: {e}")
+        html = _fb_fetch(url, headers)
+        if not html:
+            break
+
+        if "login" in html[:2000].lower() and "password" in html[:2000].lower():
+            log("  [mbasic] Login page mili — cookies invalid ya profile private hai.")
             break
 
         page_ids = []
@@ -410,6 +460,8 @@ def _mbasic_scrape_videos(start_url, cookie_str, max_pages=10):
             r'video_id=(\d+)',
             r'/videos/(\d{10,})(?:/|\?)',
             r'"videoID":"(\d{10,})"',
+            r'"video_id":"(\d{10,})"',
+            r'story_fbid=(\d{10,})',
         ]:
             for vid in _re.findall(pat, html):
                 if vid not in all_ids and vid not in page_ids:
@@ -421,7 +473,6 @@ def _mbasic_scrape_videos(start_url, cookie_str, max_pages=10):
         if not page_ids:
             break
 
-        # "See More" ya pagination link dhundo
         next_match = _re.search(
             r'href="(/[^"]*(?:videos|end_cursor|start_index|timeline_cursor)[^"]*)"',
             html, _re.IGNORECASE,
@@ -429,9 +480,10 @@ def _mbasic_scrape_videos(start_url, cookie_str, max_pages=10):
         if not next_match:
             break
         next_path = next_match.group(1)
-        if next_path in url:  # same page loop guard
+        next_url = "https://mbasic.facebook.com" + next_path
+        if next_url == url:
             break
-        url = "https://mbasic.facebook.com" + next_path
+        url = next_url
 
     return all_ids
 
